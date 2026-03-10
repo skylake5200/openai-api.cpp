@@ -332,6 +332,86 @@ void test_all_model_types() {
     master_thread.join();
 }
 
+void test_cluster_chat_multimodal_capabilities() {
+    std::cout << "Test: Cluster chat multimodal capabilities... ";
+
+    ClusterServer master;
+    std::thread master_thread([&master]() {
+        master.runAsMaster(28099);
+    });
+
+    std::this_thread::sleep_for(2s);
+
+    ClusterServer worker;
+    worker.registerChat("worker-vision", [](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
+        provider->push(OutputChunk::FinalText(req.has_image_inputs() ? "vision" : "text"));
+        provider->end();
+    }, ChatModelOptions{true, 65536});
+
+    worker.registerChat("worker-text-only", [](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
+        provider->push(OutputChunk::FinalText("text"));
+        provider->end();
+    }, ChatModelOptions{false, 8192});
+
+    std::thread worker_thread([&worker]() {
+        worker.runAsWorker("127.0.0.1", 29099);
+    });
+
+    std::this_thread::sleep_for(3s);
+
+    httplib::Client client("127.0.0.1", 28099);
+    client.set_connection_timeout(3);
+    client.set_read_timeout(3);
+
+    auto models_res = client.Get("/v1/models");
+    assert(models_res && models_res->status == 200);
+    auto models_json = nlohmann::json::parse(models_res->body);
+
+    bool saw_vision = false;
+    bool saw_text_only = false;
+    for (const auto& model : models_json["data"]) {
+        if (model["id"] == "worker-vision") {
+            saw_vision = true;
+            assert(model["capabilities"]["vision"] == true);
+            assert(model["context_window"] == 65536);
+        } else if (model["id"] == "worker-text-only") {
+            saw_text_only = true;
+            assert(model["capabilities"]["vision"] == false);
+            assert(model["context_window"] == 8192);
+        }
+    }
+    assert(saw_vision);
+    assert(saw_text_only);
+
+    nlohmann::json image_chat = {
+        {"model", "worker-text-only"},
+        {"messages", nlohmann::json::array({
+            {
+                {"role", "user"},
+                {"content", nlohmann::json::array({
+                    {{"type", "text"}, {"text", "describe"}},
+                    {{"type", "image_url"}, {"image_url", {{"url", "https://example.com/cat.png"}}}}
+                })}
+            }
+        })}
+    };
+
+    auto reject_res = client.Post("/v1/chat/completions", image_chat.dump(), "application/json");
+    assert(reject_res && reject_res->status == 400);
+
+    image_chat["model"] = "worker-vision";
+    auto accept_res = client.Post("/v1/chat/completions", image_chat.dump(), "application/json");
+    assert(accept_res && accept_res->status == 200);
+
+    worker.stop();
+    worker_thread.join();
+
+    master.stop();
+    master_thread.join();
+
+    std::cout << "PASSED" << std::endl;
+}
+
 // 测试集群服务检测函数
 void test_check_cluster_service() {
     std::cout << "Test: Check cluster service... ";
@@ -452,6 +532,7 @@ int main() {
         test_model_reregister();
         test_worker_listen_address();
         test_all_model_types();
+        test_cluster_chat_multimodal_capabilities();
         test_check_cluster_service();
         test_configuration_passing();
         test_get_internal_components();

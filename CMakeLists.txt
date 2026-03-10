@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(OPENAI_API_BUILD_EXAMPLES "Build openai-api.cpp examples" ON)
 option(OPENAI_API_BUILD_TESTS "Build openai-api.cpp tests" ON)
 option(OPENAI_API_BUILD_SHARED "Build openai-api.cpp as shared library" OFF)
+option(OPENAI_API_BUILD_SERVER "Build openai_api_server executable" ON)
 
 # 包含目录
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -65,8 +66,10 @@ endif()
 add_library(openai_api::server ALIAS openai_api)
 
 # ============ 可执行文件 ============
-add_executable(openai_api_server src/main.cpp)
-target_link_libraries(openai_api_server PRIVATE openai_api)
+if(OPENAI_API_BUILD_SERVER)
+    add_executable(openai_api_server src/main.cpp)
+    target_link_libraries(openai_api_server PRIVATE openai_api Threads::Threads)
+endif()
 
 # ============ 测试 ============
 if(OPENAI_API_BUILD_TESTS)
@@ -102,7 +105,12 @@ endif()
 include(GNUInstallDirs)
 
 # 安装库
-install(TARGETS openai_api openai_api_server
+set(OPENAI_API_INSTALL_TARGETS openai_api)
+if(OPENAI_API_BUILD_SERVER)
+    list(APPEND OPENAI_API_INSTALL_TARGETS openai_api_server)
+endif()
+
+install(TARGETS ${OPENAI_API_INSTALL_TARGETS}
     EXPORT openai_apiTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -147,5 +155,6 @@ message(STATUS "OpenAI API Server Library Configuration:")
 message(STATUS "  Version: ${PROJECT_VERSION}")
 message(STATUS "  Build examples: ${OPENAI_API_BUILD_EXAMPLES}")
 message(STATUS "  Build tests: ${OPENAI_API_BUILD_TESTS}")
+message(STATUS "  Build server: ${OPENAI_API_BUILD_SERVER}")
 message(STATUS "  Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "")

@@ -72,7 +72,8 @@ struct RemoteRequestContext {
 class OPENAI_API_API WorkerManager {
 public:
     // 模型注册回调
-    using ModelRegisteredCallback = std::function<void(const std::string& model_name, ModelType type)>;
+    using ModelRegisteredCallback = std::function<void(const std::string& model_name, ModelType type,
+                                                       const nlohmann::json& metadata)>;
     using ModelUnregisteredCallback = std::function<void(const std::string& model_name)>;
     using ForwardHandler = std::function<void(const std::string& worker_id, 
                                                const nlohmann::json& request,
@@ -100,7 +101,8 @@ public:
     // 注册模型到 Worker
     bool register_model(const std::string& worker_id, 
                         ModelType type, 
-                        const std::string& model_name);
+                        const std::string& model_name,
+                        const nlohmann::json& metadata = nlohmann::json::object());
     
     // 检查模型是否存在
     bool has_model(const std::string& model_name) const;

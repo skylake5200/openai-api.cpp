@@ -29,7 +29,8 @@ public:
     ~ModelRouter() = default;
     
     // 注册模型回调
-    void registerChat(const std::string& model_name, ChatCallback callback);
+    void registerChat(const std::string& model_name, ChatCallback callback,
+                      ChatModelOptions options = {});
     void registerEmbedding(const std::string& model_name, EmbeddingCallback callback);
     void registerASR(const std::string& model_name, ASRCallback callback);
     void registerTTS(const std::string& model_name, TTSCallback callback);
@@ -48,6 +49,8 @@ public:
     bool hasASRModel(const std::string& model_name) const;
     bool hasTTSModel(const std::string& model_name) const;
     bool hasImageGenModel(const std::string& model_name) const;
+    std::optional<bool> chatModelSupportsVision(const std::string& model_name) const;
+    std::optional<int> chatModelContextWindow(const std::string& model_name) const;
     
     // 获取模型列表
     std::vector<std::string> listChatModels() const;
@@ -67,9 +70,14 @@ public:
     void unregisterImageGeneration(const std::string& model_name);
 
 private:
+    struct ChatModelRegistration {
+        ChatCallback callback;
+        ChatModelOptions options;
+    };
+
     mutable std::shared_mutex mutex_;
     
-    std::unordered_map<std::string, ChatCallback> chat_models_;
+    std::unordered_map<std::string, ChatModelRegistration> chat_models_;
     std::unordered_map<std::string, EmbeddingCallback> embedding_models_;
     std::unordered_map<std::string, ASRCallback> asr_models_;
     std::unordered_map<std::string, TTSCallback> tts_models_;

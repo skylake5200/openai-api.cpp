@@ -109,7 +109,8 @@ public:
      * @param model_name 模型名称（如 "qwen-0.6b", "llama-7b"）
      * @param callback 模型推理回调
      */
-    void registerChat(const std::string& model_name, ChatCallback callback);
+    void registerChat(const std::string& model_name, ChatCallback callback,
+                      ChatModelOptions options = {});
     
     /**
      * 注册 Embedding 模型

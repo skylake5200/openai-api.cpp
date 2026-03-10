@@ -5,6 +5,7 @@
 #include <thread>
 #include <cassert>
 #include <chrono>
+#include <atomic>
 
 using namespace openai_api;
 
@@ -45,6 +46,121 @@ void test_model_registration() {
     assert(server.hasModel("whisper-1"));
     assert(!server.hasModel("nonexistent"));
     
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_chat_multimodal_parsing() {
+    std::cout << "Test: chat_multimodal_parsing... " << std::flush;
+
+    nlohmann::json req_json = {
+        {"model", "vision-model"},
+        {"messages", nlohmann::json::array({
+            {
+                {"role", "user"},
+                {"content", nlohmann::json::array({
+                    {
+                        {"type", "text"},
+                        {"text", "Describe this image"}
+                    },
+                    {
+                        {"type", "image_url"},
+                        {"image_url", {
+                            {"url", "https://example.com/cat.png"},
+                            {"detail", "high"}
+                        }}
+                    }
+                })}
+            }
+        })}
+    };
+
+    auto req = ChatRequest::from_json(req_json);
+    assert(req.has_image_inputs());
+    assert(req.image_input_count() == 1);
+    assert(req.image_urls().size() == 1);
+    assert(req.image_urls()[0] == "https://example.com/cat.png");
+    assert(req.flattened_text() == "Describe this image");
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_chat_multimodal_capabilities() {
+    std::cout << "Test: chat_multimodal_capabilities... " << std::flush;
+
+    Server server;
+    std::atomic<bool> vision_callback_called{false};
+
+    server.registerChat("text-only", [](const ChatRequest& req, auto provider) {
+        provider->push(OutputChunk::FinalText("text-only", req.model));
+        provider->end();
+    }, ChatModelOptions{false, 8192});
+
+    server.registerChat("vision-model", [&vision_callback_called](const ChatRequest& req, auto provider) {
+        vision_callback_called = req.has_image_inputs();
+        provider->push(OutputChunk::FinalText("vision-ok", req.model));
+        provider->end();
+    }, ChatModelOptions{true, 32768});
+
+    ServerOptions options;
+    options.host = "127.0.0.1";
+    options.port = 18126;
+    options.default_timeout = std::chrono::milliseconds(3000);
+
+    std::thread server_thread([&server, options]() {
+        server.run(options);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    httplib::Client client("127.0.0.1", 18126);
+    client.set_connection_timeout(3);
+    client.set_read_timeout(3);
+
+    auto models_res = client.Get("/v1/models");
+    assert(models_res && models_res->status == 200);
+    auto models_json = nlohmann::json::parse(models_res->body);
+
+    bool saw_text_only = false;
+    bool saw_vision = false;
+    for (const auto& model : models_json["data"]) {
+        if (model["id"] == "text-only") {
+            saw_text_only = true;
+            assert(model["capabilities"]["vision"] == false);
+            assert(model["context_window"] == 8192);
+            assert(model["input_modalities"].size() == 1);
+        } else if (model["id"] == "vision-model") {
+            saw_vision = true;
+            assert(model["capabilities"]["vision"] == true);
+            assert(model["context_window"] == 32768);
+            assert(model["input_modalities"].size() == 2);
+        }
+    }
+    assert(saw_text_only);
+    assert(saw_vision);
+
+    nlohmann::json image_chat = {
+        {"model", "text-only"},
+        {"messages", nlohmann::json::array({
+            {
+                {"role", "user"},
+                {"content", nlohmann::json::array({
+                    {{"type", "text"}, {"text", "what is in the image?"}},
+                    {{"type", "image_url"}, {"image_url", {{"url", "https://example.com/a.png"}}}}
+                })}
+            }
+        })}
+    };
+    auto reject_res = client.Post("/v1/chat/completions", image_chat.dump(), "application/json");
+    assert(reject_res && reject_res->status == 400);
+
+    image_chat["model"] = "vision-model";
+    auto accept_res = client.Post("/v1/chat/completions", image_chat.dump(), "application/json");
+    assert(accept_res && accept_res->status == 200);
+    assert(vision_callback_called.load());
+
+    server.stop();
+    server_thread.join();
+
     std::cout << "PASSED" << std::endl;
 }
 
@@ -159,6 +275,8 @@ int main() {
     
     test_server_options();
     test_model_registration();
+    test_chat_multimodal_parsing();
+    test_chat_multimodal_capabilities();
     test_end_to_end();
     test_error_handling();
     test_model_routing();

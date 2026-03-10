@@ -289,7 +289,8 @@ void WorkerClient::disconnect() {
     client_.reset();
 }
 
-bool WorkerClient::register_model(ModelType type, const std::string& model_name) {
+bool WorkerClient::register_model(ModelType type, const std::string& model_name,
+                                  const nlohmann::json& metadata) {
     if (!connected_.load()) {
         return false;
     }
@@ -301,7 +302,7 @@ bool WorkerClient::register_model(ModelType type, const std::string& model_name)
         }
     }
     
-    auto payload = make_register_model(type, model_name);
+    auto payload = make_register_model(type, model_name, metadata);
     payload["worker_id"] = worker_id_;
     payload["worker_host"] = get_listen_address();
     payload["worker_port"] = actual_listen_port_.load();

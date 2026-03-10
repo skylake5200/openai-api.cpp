@@ -93,7 +93,8 @@ public:
     
     // ============ 模型注册（本地模型） ============
     
-    void registerChat(const std::string& model_name, ChatCallback callback);
+    void registerChat(const std::string& model_name, ChatCallback callback,
+                      ChatModelOptions options = {});
     void registerEmbedding(const std::string& model_name, EmbeddingCallback callback);
     void registerASR(const std::string& model_name, ASRCallback callback);
     void registerTTS(const std::string& model_name, TTSCallback callback);
@@ -195,6 +196,7 @@ private:
     struct LocalModel {
         cluster::ModelType type;
         std::string name;
+        ChatModelOptions chat_options;
         std::function<void(const nlohmann::json&, std::shared_ptr<BaseDataProvider>)> callback;
     };
     std::vector<LocalModel> local_models_;

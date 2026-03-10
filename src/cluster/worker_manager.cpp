@@ -168,7 +168,8 @@ void WorkerManager::unregister_worker(const std::string& worker_id) {
 
 bool WorkerManager::register_model(const std::string& worker_id, 
                                     ModelType type, 
-                                    const std::string& model_name) {
+                                    const std::string& model_name,
+                                    const nlohmann::json& metadata) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     // 检查模型是否已存在
@@ -187,7 +188,7 @@ bool WorkerManager::register_model(const std::string& worker_id,
     
     // 通知回调
     if (on_model_registered_) {
-        on_model_registered_(model_name, type);
+        on_model_registered_(model_name, type, metadata);
     }
     
     return true;
@@ -494,6 +495,7 @@ void WorkerManager::handle_register(const httplib::Request& req, httplib::Respon
     std::string worker_host = payload.value("worker_host", "");
     int worker_port = payload.value("worker_port", 0);
     ModelType type = static_cast<ModelType>(payload.value("model_type", 1));
+    nlohmann::json metadata = payload.value("metadata", nlohmann::json::object());
     
     if (worker_id.empty() || model_name.empty()) {
         res.status = 400;
@@ -524,7 +526,7 @@ void WorkerManager::handle_register(const httplib::Request& req, httplib::Respon
     }
     
     // 注册模型
-    bool success = register_model(worker_id, type, model_name);
+    bool success = register_model(worker_id, type, model_name, metadata);
     
     auto ack = make_register_ack(success, success ? "" : "Registration failed");
     auto msg = build_message(MessageType::REGISTER_ACK, ack);

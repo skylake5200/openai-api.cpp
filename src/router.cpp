@@ -5,9 +5,10 @@ namespace openai_api {
 
 // ============ 注册模型 ============
 
-void ModelRouter::registerChat(const std::string& model_name, ChatCallback callback) {
+void ModelRouter::registerChat(const std::string& model_name, ChatCallback callback,
+                               ChatModelOptions options) {
     std::unique_lock lock(mutex_);
-    chat_models_[model_name] = std::move(callback);
+    chat_models_[model_name] = ChatModelRegistration{std::move(callback), std::move(options)};
 }
 
 void ModelRouter::registerEmbedding(const std::string& model_name, EmbeddingCallback callback) {
@@ -42,7 +43,7 @@ bool ModelRouter::routeChat(const ChatRequest& req, std::shared_ptr<BaseDataProv
     // 在线程中执行回调，避免阻塞 HTTP 线程
     std::thread([callback = it->second, req, provider]() {
         try {
-            callback(req, provider);
+            callback.callback(req, provider);
         } catch (const std::exception& e) {
             provider->push(OutputChunk::Error("model_error", e.what()));
             provider->end();
@@ -133,6 +134,24 @@ bool ModelRouter::routeImageGeneration(const ImageGenRequest& req, std::shared_p
 bool ModelRouter::hasChatModel(const std::string& model_name) const {
     std::shared_lock lock(mutex_);
     return chat_models_.find(model_name) != chat_models_.end();
+}
+
+std::optional<bool> ModelRouter::chatModelSupportsVision(const std::string& model_name) const {
+    std::shared_lock lock(mutex_);
+    auto it = chat_models_.find(model_name);
+    if (it == chat_models_.end()) {
+        return std::nullopt;
+    }
+    return it->second.options.supports_vision;
+}
+
+std::optional<int> ModelRouter::chatModelContextWindow(const std::string& model_name) const {
+    std::shared_lock lock(mutex_);
+    auto it = chat_models_.find(model_name);
+    if (it == chat_models_.end()) {
+        return std::nullopt;
+    }
+    return it->second.options.context_window;
 }
 
 bool ModelRouter::hasEmbeddingModel(const std::string& model_name) const {

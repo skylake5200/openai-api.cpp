@@ -5,14 +5,45 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <optional>
 
 namespace openai_api {
 
 // ============ 请求类型 ============
 
+struct ChatContentPart {
+    std::string type;
+    std::string text;
+    std::string image_url;
+    std::string image_detail;
+    nlohmann::json raw;
+
+    bool is_text() const { return type == "text"; }
+    bool is_image() const { return type == "image_url"; }
+};
+
+struct ParsedChatMessage {
+    std::string role;
+    std::vector<ChatContentPart> content_parts;
+    nlohmann::json raw;
+
+    bool has_images() const {
+        for (const auto& part : content_parts) {
+            if (part.is_image()) return true;
+        }
+        return false;
+    }
+};
+
+struct ChatModelOptions {
+    std::optional<bool> supports_vision;
+    std::optional<int> context_window;
+};
+
 struct ChatRequest {
     std::string model;
     nlohmann::json messages;
+    std::vector<ParsedChatMessage> parsed_messages;
     bool stream = false;
     float temperature = 1.0f;
     float top_p = 1.0f;
@@ -24,6 +55,48 @@ struct ChatRequest {
     
     // 原始 JSON（供扩展用）
     nlohmann::json raw;
+
+    bool has_image_inputs() const {
+        for (const auto& message : parsed_messages) {
+            if (message.has_images()) return true;
+        }
+        return false;
+    }
+
+    size_t image_input_count() const {
+        size_t count = 0;
+        for (const auto& message : parsed_messages) {
+            for (const auto& part : message.content_parts) {
+                if (part.is_image()) ++count;
+            }
+        }
+        return count;
+    }
+
+    std::vector<std::string> image_urls() const {
+        std::vector<std::string> urls;
+        for (const auto& message : parsed_messages) {
+            for (const auto& part : message.content_parts) {
+                if (part.is_image() && !part.image_url.empty()) {
+                    urls.push_back(part.image_url);
+                }
+            }
+        }
+        return urls;
+    }
+
+    std::string flattened_text() const {
+        std::string text;
+        for (const auto& message : parsed_messages) {
+            for (const auto& part : message.content_parts) {
+                if (part.is_text() && !part.text.empty()) {
+                    if (!text.empty()) text += "\n";
+                    text += part.text;
+                }
+            }
+        }
+        return text;
+    }
     
     static ChatRequest from_json(const nlohmann::json& j) {
         ChatRequest req;
@@ -40,6 +113,51 @@ struct ChatRequest {
         
         if (j.contains("messages") && j["messages"].is_array()) {
             req.messages = j["messages"];
+            for (const auto& message : j["messages"]) {
+                if (!message.is_object()) continue;
+
+                ParsedChatMessage parsed;
+                parsed.raw = message;
+                parsed.role = message.value("role", "");
+
+                if (!message.contains("content")) {
+                    req.parsed_messages.push_back(std::move(parsed));
+                    continue;
+                }
+
+                const auto& content = message["content"];
+                if (content.is_string()) {
+                    ChatContentPart part;
+                    part.type = "text";
+                    part.text = content.get<std::string>();
+                    part.raw = content;
+                    parsed.content_parts.push_back(std::move(part));
+                } else if (content.is_array()) {
+                    for (const auto& item : content) {
+                        if (!item.is_object()) continue;
+
+                        ChatContentPart part;
+                        part.raw = item;
+                        part.type = item.value("type", "");
+
+                        if (part.type == "text") {
+                            part.text = item.value("text", "");
+                        } else if (part.type == "image_url" && item.contains("image_url")) {
+                            const auto& image_url = item["image_url"];
+                            if (image_url.is_object()) {
+                                part.image_url = image_url.value("url", "");
+                                part.image_detail = image_url.value("detail", "");
+                            } else if (image_url.is_string()) {
+                                part.image_url = image_url.get<std::string>();
+                            }
+                        }
+
+                        parsed.content_parts.push_back(std::move(part));
+                    }
+                }
+
+                req.parsed_messages.push_back(std::move(parsed));
+            }
         }
         
         if (j.contains("stop")) {

@@ -116,11 +116,16 @@ inline nlohmann::json make_handshake_ack(bool accepted, const std::string& messa
 }
 
 // 注册模型消息
-inline nlohmann::json make_register_model(ModelType type, const std::string& model_name) {
-    return {
+inline nlohmann::json make_register_model(ModelType type, const std::string& model_name,
+                                         const nlohmann::json& metadata = nlohmann::json::object()) {
+    nlohmann::json payload = {
         {"model_type", static_cast<uint32_t>(type)},
         {"model_name", model_name}
     };
+    if (!metadata.empty()) {
+        payload["metadata"] = metadata;
+    }
+    return payload;
 }
 
 // 注册确认

@@ -39,8 +39,9 @@ void Server::setOwner(const std::string& owner) {
 
 // ============ 模型注册 ============
 
-void Server::registerChat(const std::string& model_name, ChatCallback callback) {
-    router_.registerChat(model_name, std::move(callback));
+void Server::registerChat(const std::string& model_name, ChatCallback callback,
+                          ChatModelOptions options) {
+    router_.registerChat(model_name, std::move(callback), std::move(options));
 }
 
 void Server::registerEmbedding(const std::string& model_name, EmbeddingCallback callback) {
@@ -261,6 +262,17 @@ void Server::handleModels(const httplib::Request& req, httplib::Response& res) {
         model_j["object"] = "model";
         model_j["created"] = now;
         model_j["owned_by"] = options_.owner;
+        if (auto supports_vision = router_.chatModelSupportsVision(model_name);
+            supports_vision.has_value()) {
+            model_j["capabilities"]["vision"] = supports_vision.value();
+            model_j["input_modalities"] = supports_vision.value()
+                ? nlohmann::json::array({"text", "image"})
+                : nlohmann::json::array({"text"});
+        }
+        if (auto context_window = router_.chatModelContextWindow(model_name);
+            context_window.has_value()) {
+            model_j["context_window"] = context_window.value();
+        }
         j["data"].push_back(model_j);
     }
     
@@ -314,6 +326,18 @@ void Server::handleChatCompletions(const httplib::Request& req, httplib::Respons
         }
         res.set_content(ErrorEncoder::invalid_request(msg), "application/json");
         return;
+    }
+
+    if (request.has_image_inputs()) {
+        auto supports_vision = router_.chatModelSupportsVision(request.model);
+        if (supports_vision.has_value() && !supports_vision.value()) {
+            res.status = 400;
+            res.set_content(
+                ErrorEncoder::invalid_request(
+                    "Model '" + request.model + "' does not support image inputs"),
+                "application/json");
+            return;
+        }
     }
     
     // 创建 Provider 并路由

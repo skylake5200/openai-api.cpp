@@ -55,7 +55,8 @@ void ClusterServer::setWorkerListenAddress(const std::string& host, int port) {
     }
 }
 
-void ClusterServer::registerChat(const std::string& model_name, ChatCallback callback) {
+void ClusterServer::registerChat(const std::string& model_name, ChatCallback callback,
+                                 ChatModelOptions options) {
     std::lock_guard<std::mutex> lock(models_mutex_);
     
     if (mode_ == ClusterMode::WORKER && worker_client_) {
@@ -63,6 +64,7 @@ void ClusterServer::registerChat(const std::string& model_name, ChatCallback cal
         LocalModel model;
         model.type = cluster::ModelType::CHAT;
         model.name = model_name;
+        model.chat_options = options;
         model.callback = [callback](const nlohmann::json& req, std::shared_ptr<BaseDataProvider> provider) {
             ChatRequest chat_req = ChatRequest::from_json(req);
             callback(chat_req, provider);
@@ -70,12 +72,13 @@ void ClusterServer::registerChat(const std::string& model_name, ChatCallback cal
         local_models_.push_back(model);
     } else if ((mode_ == ClusterMode::MASTER || mode_ == ClusterMode::STANDALONE) && server_) {
         // Master/Standalone 运行中：直接注册到本地 Server
-        server_->registerChat(model_name, callback);
+        server_->registerChat(model_name, callback, options);
     } else {
         // STANDALONE 模式或尚未确定模式：暂存
         LocalModel model;
         model.type = cluster::ModelType::CHAT;
         model.name = model_name;
+        model.chat_options = options;
         model.callback = [callback](const nlohmann::json& req, std::shared_ptr<BaseDataProvider> provider) {
             ChatRequest chat_req = ChatRequest::from_json(req);
             callback(chat_req, provider);
@@ -275,15 +278,22 @@ bool ClusterServer::runAsMaster(int port) {
         
         // 先设置回调，再启动 WorkerManager，避免错过早期注册
         worker_manager_->set_model_registered_callback(
-            [this](const std::string& model_name, cluster::ModelType type) {
+            [this](const std::string& model_name, cluster::ModelType type, const nlohmann::json& metadata) {
                 // 将 Worker 模型注册到 Server 的 Router
                 // 根据类型注册到 Server
                 switch (type) {
                     case cluster::ModelType::CHAT: {
+                        ChatModelOptions options;
+                        if (metadata.contains("supports_vision")) {
+                            options.supports_vision = metadata.value("supports_vision", false);
+                        }
+                        if (metadata.contains("context_window")) {
+                            options.context_window = metadata.value("context_window", 0);
+                        }
                         auto forward_callback = [this, model_name](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
                             worker_manager_->forward_request(model_name, cluster::ModelType::CHAT, req.raw, provider);
                         };
-                        server_->registerChat(model_name, forward_callback);
+                        server_->registerChat(model_name, forward_callback, options);
                         break;
                     }
                     case cluster::ModelType::EMBEDDING: {
@@ -388,9 +398,12 @@ bool ClusterServer::runAsWorker(const std::string& master_host, int master_port)
     for (const auto& model : models_copy) {
         switch (model.type) {
             case cluster::ModelType::CHAT:
-                router->registerChat(model.name, [model](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
-                    model.callback(req.raw, provider);
-                });
+                router->registerChat(
+                    model.name,
+                    [model](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
+                        model.callback(req.raw, provider);
+                    },
+                    model.chat_options);
                 break;
             case cluster::ModelType::EMBEDDING:
                 router->registerEmbedding(model.name, [model](const EmbeddingRequest& req, std::shared_ptr<BaseDataProvider> provider) {
@@ -434,7 +447,14 @@ bool ClusterServer::runAsWorker(const std::string& master_host, int master_port)
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
         for (const auto& model : models_copy) {
-            if (!worker_client_->register_model(model.type, model.name)) {
+            nlohmann::json metadata = nlohmann::json::object();
+            if (model.type == cluster::ModelType::CHAT && model.chat_options.supports_vision.has_value()) {
+                metadata["supports_vision"] = model.chat_options.supports_vision.value();
+            }
+            if (model.type == cluster::ModelType::CHAT && model.chat_options.context_window.has_value()) {
+                metadata["context_window"] = model.chat_options.context_window.value();
+            }
+            if (!worker_client_->register_model(model.type, model.name, metadata)) {
                 std::cerr << "Failed to register model: " << model.name << std::endl;
             }
         }
@@ -549,7 +569,14 @@ void ClusterServer::registerLocalModelsToMaster() {
     
     std::lock_guard<std::mutex> lock(models_mutex_);
     for (const auto& model : local_models_) {
-        worker_client_->register_model(model.type, model.name);
+        nlohmann::json metadata = nlohmann::json::object();
+        if (model.type == cluster::ModelType::CHAT && model.chat_options.supports_vision.has_value()) {
+            metadata["supports_vision"] = model.chat_options.supports_vision.value();
+        }
+        if (model.type == cluster::ModelType::CHAT && model.chat_options.context_window.has_value()) {
+            metadata["context_window"] = model.chat_options.context_window.value();
+        }
+        worker_client_->register_model(model.type, model.name, metadata);
     }
     local_models_.clear();
 }
@@ -564,7 +591,7 @@ void ClusterServer::registerLocalModelsToServer() {
                 auto callback = [model](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
                     model.callback(req.raw, provider);
                 };
-                server_->registerChat(model.name, callback);
+                server_->registerChat(model.name, callback, model.chat_options);
                 break;
             }
             case cluster::ModelType::EMBEDDING: {

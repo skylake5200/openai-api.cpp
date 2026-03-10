@@ -47,7 +47,8 @@ public:
     bool is_connected() const { return connected_.load(); }
     
     // 注册模型（向 Master 注册）
-    bool register_model(ModelType type, const std::string& model_name);
+    bool register_model(ModelType type, const std::string& model_name,
+                        const nlohmann::json& metadata = nlohmann::json::object());
     
     // 设置请求处理器（由应用层设置，用于处理 Master 转发的请求）
     void set_request_handler(RequestHandler handler) { request_handler_ = handler; }
