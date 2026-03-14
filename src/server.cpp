@@ -269,9 +269,16 @@ void Server::handleModels(const httplib::Request& req, httplib::Response& res) {
                 ? nlohmann::json::array({"text", "image"})
                 : nlohmann::json::array({"text"});
         }
-        if (auto context_window = router_.chatModelContextWindow(model_name);
-            context_window.has_value()) {
-            model_j["context_window"] = context_window.value();
+        auto extra_fields = router_.chatModelExtraFields(model_name);
+        if (extra_fields.is_object()) {
+            for (auto it = extra_fields.begin(); it != extra_fields.end(); ++it) {
+                if (it.key() == "id" || it.key() == "object" || it.key() == "created" ||
+                    it.key() == "owned_by" || it.key() == "capabilities" ||
+                    it.key() == "input_modalities") {
+                    continue;
+                }
+                model_j[it.key()] = it.value();
+            }
         }
         j["data"].push_back(model_j);
     }

@@ -37,7 +37,7 @@ struct ParsedChatMessage {
 
 struct ChatModelOptions {
     std::optional<bool> supports_vision;
-    std::optional<int> context_window;
+    nlohmann::json extra_fields = nlohmann::json::object();
 };
 
 struct ChatRequest {

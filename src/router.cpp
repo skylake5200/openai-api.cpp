@@ -145,13 +145,13 @@ std::optional<bool> ModelRouter::chatModelSupportsVision(const std::string& mode
     return it->second.options.supports_vision;
 }
 
-std::optional<int> ModelRouter::chatModelContextWindow(const std::string& model_name) const {
+nlohmann::json ModelRouter::chatModelExtraFields(const std::string& model_name) const {
     std::shared_lock lock(mutex_);
     auto it = chat_models_.find(model_name);
     if (it == chat_models_.end()) {
-        return std::nullopt;
+        return nlohmann::json::object();
     }
-    return it->second.options.context_window;
+    return it->second.options.extra_fields;
 }
 
 bool ModelRouter::hasEmbeddingModel(const std::string& model_name) const {

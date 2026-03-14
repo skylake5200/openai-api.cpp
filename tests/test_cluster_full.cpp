@@ -343,15 +343,25 @@ void test_cluster_chat_multimodal_capabilities() {
     std::this_thread::sleep_for(2s);
 
     ClusterServer worker;
+    ChatModelOptions vision_options;
+    vision_options.supports_vision = true;
+    vision_options.extra_fields["context_window"] = 65536;
+    vision_options.extra_fields["family"] = "vision";
+
+    ChatModelOptions text_only_options;
+    text_only_options.supports_vision = false;
+    text_only_options.extra_fields["context_window"] = 8192;
+    text_only_options.extra_fields["family"] = "text";
+
     worker.registerChat("worker-vision", [](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
         provider->push(OutputChunk::FinalText(req.has_image_inputs() ? "vision" : "text"));
         provider->end();
-    }, ChatModelOptions{true, 65536});
+    }, vision_options);
 
     worker.registerChat("worker-text-only", [](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
         provider->push(OutputChunk::FinalText("text"));
         provider->end();
-    }, ChatModelOptions{false, 8192});
+    }, text_only_options);
 
     std::thread worker_thread([&worker]() {
         worker.runAsWorker("127.0.0.1", 29099);
@@ -374,10 +384,12 @@ void test_cluster_chat_multimodal_capabilities() {
             saw_vision = true;
             assert(model["capabilities"]["vision"] == true);
             assert(model["context_window"] == 65536);
+            assert(model["family"] == "vision");
         } else if (model["id"] == "worker-text-only") {
             saw_text_only = true;
             assert(model["capabilities"]["vision"] == false);
             assert(model["context_window"] == 8192);
+            assert(model["family"] == "text");
         }
     }
     assert(saw_vision);

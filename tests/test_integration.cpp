@@ -89,17 +89,26 @@ void test_chat_multimodal_capabilities() {
 
     Server server;
     std::atomic<bool> vision_callback_called{false};
+    ChatModelOptions text_only_options;
+    text_only_options.supports_vision = false;
+    text_only_options.extra_fields["context_window"] = 8192;
+    text_only_options.extra_fields["max_output_tokens"] = 2048;
+
+    ChatModelOptions vision_options;
+    vision_options.supports_vision = true;
+    vision_options.extra_fields["context_window"] = 32768;
+    vision_options.extra_fields["max_output_tokens"] = 8192;
 
     server.registerChat("text-only", [](const ChatRequest& req, auto provider) {
         provider->push(OutputChunk::FinalText("text-only", req.model));
         provider->end();
-    }, ChatModelOptions{false, 8192});
+    }, text_only_options);
 
     server.registerChat("vision-model", [&vision_callback_called](const ChatRequest& req, auto provider) {
         vision_callback_called = req.has_image_inputs();
         provider->push(OutputChunk::FinalText("vision-ok", req.model));
         provider->end();
-    }, ChatModelOptions{true, 32768});
+    }, vision_options);
 
     ServerOptions options;
     options.host = "127.0.0.1";
@@ -127,11 +136,13 @@ void test_chat_multimodal_capabilities() {
             saw_text_only = true;
             assert(model["capabilities"]["vision"] == false);
             assert(model["context_window"] == 8192);
+            assert(model["max_output_tokens"] == 2048);
             assert(model["input_modalities"].size() == 1);
         } else if (model["id"] == "vision-model") {
             saw_vision = true;
             assert(model["capabilities"]["vision"] == true);
             assert(model["context_window"] == 32768);
+            assert(model["max_output_tokens"] == 8192);
             assert(model["input_modalities"].size() == 2);
         }
     }

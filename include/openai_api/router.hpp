@@ -50,7 +50,7 @@ public:
     bool hasTTSModel(const std::string& model_name) const;
     bool hasImageGenModel(const std::string& model_name) const;
     std::optional<bool> chatModelSupportsVision(const std::string& model_name) const;
-    std::optional<int> chatModelContextWindow(const std::string& model_name) const;
+    nlohmann::json chatModelExtraFields(const std::string& model_name) const;
     
     // 获取模型列表
     std::vector<std::string> listChatModels() const;

@@ -287,8 +287,8 @@ bool ClusterServer::runAsMaster(int port) {
                         if (metadata.contains("supports_vision")) {
                             options.supports_vision = metadata.value("supports_vision", false);
                         }
-                        if (metadata.contains("context_window")) {
-                            options.context_window = metadata.value("context_window", 0);
+                        if (metadata.contains("extra_fields") && metadata["extra_fields"].is_object()) {
+                            options.extra_fields = metadata["extra_fields"];
                         }
                         auto forward_callback = [this, model_name](const ChatRequest& req, std::shared_ptr<BaseDataProvider> provider) {
                             worker_manager_->forward_request(model_name, cluster::ModelType::CHAT, req.raw, provider);
@@ -451,8 +451,9 @@ bool ClusterServer::runAsWorker(const std::string& master_host, int master_port)
             if (model.type == cluster::ModelType::CHAT && model.chat_options.supports_vision.has_value()) {
                 metadata["supports_vision"] = model.chat_options.supports_vision.value();
             }
-            if (model.type == cluster::ModelType::CHAT && model.chat_options.context_window.has_value()) {
-                metadata["context_window"] = model.chat_options.context_window.value();
+            if (model.type == cluster::ModelType::CHAT && model.chat_options.extra_fields.is_object() &&
+                !model.chat_options.extra_fields.empty()) {
+                metadata["extra_fields"] = model.chat_options.extra_fields;
             }
             if (!worker_client_->register_model(model.type, model.name, metadata)) {
                 std::cerr << "Failed to register model: " << model.name << std::endl;
@@ -573,8 +574,9 @@ void ClusterServer::registerLocalModelsToMaster() {
         if (model.type == cluster::ModelType::CHAT && model.chat_options.supports_vision.has_value()) {
             metadata["supports_vision"] = model.chat_options.supports_vision.value();
         }
-        if (model.type == cluster::ModelType::CHAT && model.chat_options.context_window.has_value()) {
-            metadata["context_window"] = model.chat_options.context_window.value();
+        if (model.type == cluster::ModelType::CHAT && model.chat_options.extra_fields.is_object() &&
+            !model.chat_options.extra_fields.empty()) {
+            metadata["extra_fields"] = model.chat_options.extra_fields;
         }
         worker_client_->register_model(model.type, model.name, metadata);
     }
