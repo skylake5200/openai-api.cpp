@@ -104,13 +104,18 @@ private:
         j["object"] = "chat.completion.chunk";
         j["created"] = chunk.created ? chunk.created : std::time(nullptr);
         j["model"] = chunk.model.empty() ? "gpt-4" : chunk.model;
-        
+
         nlohmann::json choice;
         choice["index"] = chunk.index;
         choice["delta"] = nlohmann::json::object();
         choice["finish_reason"] = "stop";
-        
+
         j["choices"] = nlohmann::json::array({choice});
+
+        j["usage"]["prompt_tokens"] = chunk.usage.prompt_tokens;
+        j["usage"]["completion_tokens"] = chunk.usage.completion_tokens;
+        j["usage"]["total_tokens"] = chunk.usage.total_tokens;
+
         return j;
     }
     
@@ -143,10 +148,10 @@ public:
         
         j["choices"] = nlohmann::json::array({choice});
         
-        // 默认 usage 信息
-        j["usage"]["prompt_tokens"] = 0;
-        j["usage"]["completion_tokens"] = 0;
-        j["usage"]["total_tokens"] = 0;
+        // usage 信息
+        j["usage"]["prompt_tokens"] = chunk.usage.prompt_tokens;
+        j["usage"]["completion_tokens"] = chunk.usage.completion_tokens;
+        j["usage"]["total_tokens"] = chunk.usage.total_tokens;
         
         return j.dump(2);
     }
@@ -175,8 +180,8 @@ public:
         }
         
         j["model"] = chunk.model.empty() ? "text-embedding-ada-002" : chunk.model;
-        j["usage"]["prompt_tokens"] = 0;
-        j["usage"]["total_tokens"] = 0;
+        j["usage"]["prompt_tokens"] = chunk.usage.prompt_tokens;
+        j["usage"]["total_tokens"] = chunk.usage.total_tokens;
         
         return j.dump(2);
     }

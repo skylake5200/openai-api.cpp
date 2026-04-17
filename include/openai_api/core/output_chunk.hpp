@@ -57,6 +57,12 @@ struct OutputChunk {
     int64_t created;
     int index;  // 用于批量结果中的序号
     
+    struct Usage {
+        int prompt_tokens = 0;
+        int completion_tokens = 0;
+        int total_tokens = 0;
+    } usage;
+
     // 构造函数
     OutputChunk() : type(OutputChunkType::End), created(0), index(0) {}
     
