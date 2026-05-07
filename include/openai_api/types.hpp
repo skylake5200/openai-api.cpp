@@ -201,6 +201,13 @@ struct EmbeddingRequest {
                 }
             }
         }
+
+        // vLLM-style extension: allow `messages` (chat-style content, including multimodal parts) for embeddings.
+        // The actual handling is delegated to the embedding callback via `req.raw`.
+        // To keep the server-side validation logic happy, ensure `inputs` is non-empty when `messages` exists.
+        if (req.inputs.empty() && j.contains("messages") && j["messages"].is_array()) {
+            req.inputs.push_back("");
+        }
         
         return req;
     }
