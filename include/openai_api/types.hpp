@@ -45,7 +45,9 @@ struct ChatRequest {
     nlohmann::json messages;
     std::vector<ParsedChatMessage> parsed_messages;
     bool stream = false;
+    bool has_temperature = false;
     float temperature = 1.0f;
+    bool has_top_p = false;
     float top_p = 1.0f;
     int max_tokens = 2048;
     int n = 1;
@@ -104,8 +106,8 @@ struct ChatRequest {
         
         if (j.contains("model")) req.model = j["model"].get<std::string>();
         if (j.contains("stream")) req.stream = j["stream"].get<bool>();
-        if (j.contains("temperature")) req.temperature = j["temperature"].get<float>();
-        if (j.contains("top_p")) req.top_p = j["top_p"].get<float>();
+        if (j.contains("temperature")) { req.has_temperature = true; req.temperature = j["temperature"].get<float>(); }
+        if (j.contains("top_p")) { req.has_top_p = true; req.top_p = j["top_p"].get<float>(); }
         if (j.contains("max_tokens")) req.max_tokens = j["max_tokens"].get<int>();
         if (j.contains("n")) req.n = j["n"].get<int>();
         if (j.contains("presence_penalty")) req.presence_penalty = j["presence_penalty"].get<float>();
@@ -217,6 +219,7 @@ struct ASRRequest {
     std::string model;
     std::vector<uint8_t> audio_data;
     std::string filename;  // 原始文件名
+    std::string task = "transcription"; // transcription | translation
     std::string language;
     std::string prompt;
     std::string response_format = "json";  // json, text, srt, verbose_json, vtt

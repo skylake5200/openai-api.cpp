@@ -537,6 +537,7 @@ void Server::handleTranscriptions(const httplib::Request& req, httplib::Response
     struct SlotGuard { Server* s; ~SlotGuard() { s->releaseSlot(); } } guard{this};
     
     ASRRequest request;
+    request.task = "transcription";
     request.raw_body = req.body;
 
     // 优先使用 httplib 解析后的 multipart form
@@ -545,6 +546,17 @@ void Server::handleTranscriptions(const httplib::Request& req, httplib::Response
             request.model = req.form.get_field("model");
         } else if (req.has_param("model")) {
             request.model = req.get_param_value("model");
+        }
+
+        if (req.form.has_field("language")) request.language = req.form.get_field("language");
+        if (req.form.has_field("prompt")) request.prompt = req.form.get_field("prompt");
+        if (req.form.has_field("response_format")) request.response_format = req.form.get_field("response_format");
+        if (req.form.has_field("temperature")) {
+            try {
+                request.temperature = std::stof(req.form.get_field("temperature"));
+            } catch (...) {
+                // ignore invalid temperature and keep default
+            }
         }
 
         if (req.form.has_file("file")) {
@@ -614,8 +626,106 @@ void Server::handleTranscriptions(const httplib::Request& req, httplib::Response
 }
 
 void Server::handleTranslations(const httplib::Request& req, httplib::Response& res) {
-    // 翻译端点与转录类似
-    handleTranscriptions(req, res);
+    if (!verifyApiKey(req)) {
+        res.status = 401;
+        res.set_content(ErrorEncoder::encode("unauthorized", "Invalid API key"), "application/json");
+        return;
+    }
+    
+    if (!acquireSlot()) {
+        res.status = 503;
+        res.set_content(ErrorEncoder::rate_limit(), "application/json");
+        return;
+    }
+    struct SlotGuard { Server* s; ~SlotGuard() { s->releaseSlot(); } } guard{this};
+    
+    ASRRequest request;
+    request.task = "translation";
+    request.raw_body = req.body;
+
+    // 优先使用 httplib 解析后的 multipart form
+    if (req.is_multipart_form_data()) {
+        if (req.form.has_field("model")) {
+            request.model = req.form.get_field("model");
+        } else if (req.has_param("model")) {
+            request.model = req.get_param_value("model");
+        }
+
+        if (req.form.has_field("language")) request.language = req.form.get_field("language");
+        if (req.form.has_field("prompt")) request.prompt = req.form.get_field("prompt");
+        if (req.form.has_field("response_format")) request.response_format = req.form.get_field("response_format");
+        if (req.form.has_field("temperature")) {
+            try {
+                request.temperature = std::stof(req.form.get_field("temperature"));
+            } catch (...) {
+                // ignore invalid temperature and keep default
+            }
+        }
+
+        if (req.form.has_file("file")) {
+            auto file = req.form.get_file("file");
+            request.filename = file.filename;
+            request.audio_data.assign(file.content.begin(), file.content.end());
+        }
+    }
+
+    // 回退：兼容旧版字符串提取逻辑
+    if (request.model.empty()) {
+        size_t model_pos = req.body.find("name=\"model\"");
+        if (model_pos != std::string::npos) {
+            size_t val_start = req.body.find("\r\n\r\n", model_pos);
+            if (val_start != std::string::npos) {
+                val_start += 4;
+                size_t val_end = req.body.find("\r\n", val_start);
+                if (val_end != std::string::npos) {
+                    request.model = req.body.substr(val_start, val_end - val_start);
+                }
+            }
+        }
+    }
+    
+    if (request.model.empty()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Missing 'model' field"), "application/json");
+        return;
+    }
+    
+    if (!router_.hasASRModel(request.model)) {
+        res.status = 400;
+        auto available = router_.listASRModels();
+        std::string msg = "Model '" + request.model + "' is not available";
+        if (!available.empty()) {
+            msg += ". Available models: ";
+            for (size_t i = 0; i < available.size(); ++i) {
+                if (i > 0) msg += ", ";
+                msg += available[i];
+            }
+        }
+        res.set_content(ErrorEncoder::invalid_request(msg), "application/json");
+        return;
+    }
+    
+    auto provider = std::make_shared<QueueProvider>(options_.default_timeout);
+    if (!router_.routeASR(request, provider)) {
+        res.status = 500;
+        res.set_content(ErrorEncoder::server_error("Failed to route request"), "application/json");
+        return;
+    }
+    
+    auto chunk = provider->wait_pop_for(options_.default_timeout);
+    if (!chunk.has_value()) {
+        res.status = 504;
+        res.set_content(ErrorEncoder::server_error("Request timeout"), "application/json");
+        return;
+    }
+    if (chunk->is_error()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::encode(chunk->error_code, chunk->error_message), "application/json");
+        return;
+    }
+    
+    ASRJSONEncoder encoder;
+    res.set_content(encoder.encode(chunk.value()), "application/json");
 }
 
 void Server::handleSpeech(const httplib::Request& req, httplib::Response& res) {
