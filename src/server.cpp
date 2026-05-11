@@ -788,13 +788,34 @@ void Server::handleLlamaEmbeddings(const httplib::Request& req, httplib::Respons
 
     auto request = EmbeddingRequest::from_json(req_json);
     if (request.model.empty()) {
+        request.model = pick_default_embedding_model(router_, req_json);
+    }
+    if (request.model.empty()) {
         res.status = 400;
         res.set_content(ErrorEncoder::invalid_request("Missing 'model' field"), "application/json");
         return;
     }
+
+    // Accept llama-native `content` as well (multimodal friendly), in addition to OpenAI-style `input`.
+    if (request.inputs.empty() && req_json.contains("content")) {
+        if (req_json["content"].is_string()) {
+            request.inputs.push_back(req_json["content"].get<std::string>());
+        } else {
+            std::string err;
+            nlohmann::json messages;
+            if (!llama_content_to_openai_messages(req_json["content"], messages, err)) {
+                res.status = 400;
+                res.set_content(ErrorEncoder::invalid_request(err), "application/json");
+                return;
+            }
+            request.raw["messages"] = std::move(messages);
+            request.inputs.push_back(""); // keep server-side validation happy
+        }
+    }
+
     if (request.inputs.empty()) {
         res.status = 400;
-        res.set_content(ErrorEncoder::invalid_request("Missing 'input' field"), "application/json");
+        res.set_content(ErrorEncoder::invalid_request("Missing 'input' or 'content' field"), "application/json");
         return;
     }
 
