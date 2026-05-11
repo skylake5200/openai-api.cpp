@@ -198,6 +198,11 @@ private:
     void handleModels(const httplib::Request& req, httplib::Response& res);
     void handleChatCompletions(const httplib::Request& req, httplib::Response& res);
     void handleEmbeddings(const httplib::Request& req, httplib::Response& res);
+    // llama.cpp compatibility endpoints:
+    // - POST /embedding
+    // - POST /embeddings (non-OAI, response is a JSON array)
+    void handleLlamaEmbedding(const httplib::Request& req, httplib::Response& res);
+    void handleLlamaEmbeddings(const httplib::Request& req, httplib::Response& res);
     void handleTranscriptions(const httplib::Request& req, httplib::Response& res);
     void handleTranslations(const httplib::Request& req, httplib::Response& res);
     void handleSpeech(const httplib::Request& req, httplib::Response& res);

@@ -4,6 +4,8 @@
 #include <iostream>
 #include <sstream>
 #include <chrono>
+#include <regex>
+#include <functional>
 
 namespace openai_api {
 
@@ -196,7 +198,12 @@ void Server::setupRoutes() {
         handleEmbeddings(req, res);
     });
     http_server_.Post("/embeddings", [this](const httplib::Request& req, httplib::Response& res) {
-        handleEmbeddings(req, res);
+        handleLlamaEmbeddings(req, res);
+    });
+
+    // llama.cpp compatibility: single embedding endpoint
+    http_server_.Post("/embedding", [this](const httplib::Request& req, httplib::Response& res) {
+        handleLlamaEmbedding(req, res);
     });
     
     // ASR
@@ -520,6 +527,323 @@ void Server::handleEmbeddings(const httplib::Request& req, httplib::Response& re
     
     EmbeddingsJSONEncoder encoder;
     res.set_content(encoder.encode(chunk.value()), "application/json");
+}
+
+static std::string llama_b64_to_data_uri_image(const std::string& s) {
+    if (s.rfind("data:", 0) == 0) return s;
+    // llama.cpp native multimodal requests typically provide raw base64 strings.
+    // We wrap them as a data URI so downstream code can decode them uniformly.
+    return std::string("data:image/jpeg;base64,") + s;
+}
+
+static void llama_append_prompt_string_with_media(
+    const std::string& prompt_string,
+    const nlohmann::json& multimodal_data,
+    nlohmann::json& out_parts)
+{
+    // Best-effort: treat any "<__media...>" token as a media marker.
+    static const std::regex k_marker_re(R"(<__media[^>]*>)");
+    std::sregex_iterator it(prompt_string.begin(), prompt_string.end(), k_marker_re);
+    std::sregex_iterator end;
+
+    size_t last = 0;
+    size_t media_idx = 0;
+
+    for (; it != end; ++it) {
+        const size_t pos = (size_t)it->position();
+        const size_t len = (size_t)it->length();
+
+        if (pos > last) {
+            const std::string seg = prompt_string.substr(last, pos - last);
+            if (!seg.empty()) {
+                out_parts.push_back({{"type", "text"}, {"text", seg}});
+            }
+        }
+
+        if (multimodal_data.is_array() && media_idx < multimodal_data.size() && multimodal_data[media_idx].is_string()) {
+            const std::string b64 = multimodal_data[media_idx].get<std::string>();
+            out_parts.push_back({
+                {"type", "image_url"},
+                {"image_url", {{"url", llama_b64_to_data_uri_image(b64)}}},
+            });
+            media_idx++;
+        }
+
+        last = pos + len;
+    }
+
+    if (last < prompt_string.size()) {
+        const std::string tail = prompt_string.substr(last);
+        if (!tail.empty()) {
+            out_parts.push_back({{"type", "text"}, {"text", tail}});
+        }
+    }
+
+    // If there are remaining media items (marker mismatch), append them at the end.
+    if (multimodal_data.is_array()) {
+        for (; media_idx < multimodal_data.size(); ++media_idx) {
+            if (!multimodal_data[media_idx].is_string()) continue;
+            const std::string b64 = multimodal_data[media_idx].get<std::string>();
+            out_parts.push_back({
+                {"type", "image_url"},
+                {"image_url", {{"url", llama_b64_to_data_uri_image(b64)}}},
+            });
+        }
+    }
+}
+
+static bool llama_content_to_openai_messages(const nlohmann::json& content, nlohmann::json& out_messages, std::string& err) {
+    nlohmann::json parts = nlohmann::json::array();
+
+    // The llama.cpp native `/embedding` endpoint uses `content`. For multimodal,
+    // `content` may be a JSON object or an array of mixed items (strings, objects, token ids).
+    // We translate it into an OpenAI-style `messages` array so the existing embedding callback
+    // can reuse the unified multimodal handling code.
+    std::function<void(const nlohmann::json&)> append_one = [&](const nlohmann::json& v) {
+        if (v.is_string()) {
+            const std::string s = v.get<std::string>();
+            if (!s.empty()) parts.push_back({{"type", "text"}, {"text", s}});
+            return;
+        }
+        if (v.is_object()) {
+            const std::string prompt_string = v.value("prompt_string", "");
+            const nlohmann::json multimodal_data = v.contains("multimodal_data") ? v["multimodal_data"] : nlohmann::json::array();
+            llama_append_prompt_string_with_media(prompt_string, multimodal_data, parts);
+            return;
+        }
+        if (v.is_array()) {
+            // Mixed sequences are allowed in llama.cpp prompt formats; handle recursively.
+            for (const auto& item : v) append_one(item);
+            return;
+        }
+        // Numbers (token ids) and other types are ignored in this compatibility layer.
+    };
+
+    append_one(content);
+
+    if (parts.empty()) {
+        err = "Missing 'content' (empty after parsing)";
+        return false;
+    }
+
+    out_messages = nlohmann::json::array({
+        {
+            {"role", "user"},
+            {"content", parts},
+        }
+    });
+    return true;
+}
+
+static std::string pick_default_embedding_model(const ModelRouter& router, const nlohmann::json& req_json) {
+    if (req_json.contains("model") && req_json["model"].is_string()) {
+        return req_json["model"].get<std::string>();
+    }
+    auto models = router.listEmbeddingModels();
+    if (models.size() == 1) return models[0];
+    return "";
+}
+
+void Server::handleLlamaEmbedding(const httplib::Request& req, httplib::Response& res) {
+    if (!verifyApiKey(req)) {
+        res.status = 401;
+        res.set_content(ErrorEncoder::encode("unauthorized", "Invalid API key"), "application/json");
+        return;
+    }
+
+    if (!acquireSlot()) {
+        res.status = 503;
+        res.set_content(ErrorEncoder::rate_limit(), "application/json");
+        return;
+    }
+    struct SlotGuard { Server* s; ~SlotGuard() { s->releaseSlot(); } } guard{this};
+
+    nlohmann::json req_json;
+    try {
+        req_json = nlohmann::json::parse(req.body);
+    } catch (...) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Invalid JSON"), "application/json");
+        return;
+    }
+
+    EmbeddingRequest request;
+    request.raw = req_json;
+    request.model = pick_default_embedding_model(router_, req_json);
+    if (request.model.empty()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Missing 'model' field"), "application/json");
+        return;
+    }
+
+    if (!router_.hasEmbeddingModel(request.model)) {
+        res.status = 400;
+        auto available = router_.listEmbeddingModels();
+        std::string msg = "Model '" + request.model + "' is not available";
+        if (!available.empty()) {
+            msg += ". Available models: ";
+            for (size_t i = 0; i < available.size(); ++i) {
+                if (i > 0) msg += ", ";
+                msg += available[i];
+            }
+        }
+        res.set_content(ErrorEncoder::invalid_request(msg), "application/json");
+        return;
+    }
+
+    // Accept both llama-native `content` and OpenAI-style `input` for convenience.
+    if (req_json.contains("content")) {
+        if (req_json["content"].is_string()) {
+            request.inputs.push_back(req_json["content"].get<std::string>());
+        } else {
+            std::string err;
+            nlohmann::json messages;
+            if (!llama_content_to_openai_messages(req_json["content"], messages, err)) {
+                res.status = 400;
+                res.set_content(ErrorEncoder::invalid_request(err), "application/json");
+                return;
+            }
+            request.raw["messages"] = std::move(messages);
+            request.inputs.push_back(""); // keep server-side validation happy
+        }
+    } else if (req_json.contains("input")) {
+        if (req_json["input"].is_string()) {
+            request.inputs.push_back(req_json["input"].get<std::string>());
+        } else if (req_json["input"].is_array()) {
+            for (const auto& item : req_json["input"]) {
+                if (item.is_string()) request.inputs.push_back(item.get<std::string>());
+            }
+        }
+    }
+
+    if (request.inputs.empty()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Missing 'content' field"), "application/json");
+        return;
+    }
+
+    auto provider = std::make_shared<QueueProvider>(options_.default_timeout);
+    if (!router_.routeEmbedding(request, provider)) {
+        res.status = 500;
+        res.set_content(ErrorEncoder::server_error("Failed to route request"), "application/json");
+        return;
+    }
+
+    auto chunk = provider->wait_pop_for(options_.default_timeout);
+    if (!chunk.has_value()) {
+        res.status = 504;
+        res.set_content(ErrorEncoder::server_error("Request timeout"), "application/json");
+        return;
+    }
+
+    if (chunk->is_error()) {
+        res.status = 400;
+        EmbeddingsJSONEncoder encoder;
+        res.set_content(encoder.encode(chunk.value()), "application/json");
+        return;
+    }
+
+    // llama.cpp-style response: { "embedding": [...], "model": "..." }
+    std::vector<float> embedding;
+    if (chunk->type == OutputChunkType::Embedding) {
+        embedding = chunk->embedding;
+    } else if (chunk->type == OutputChunkType::Embeddings) {
+        if (!chunk->embeds.empty()) embedding = chunk->embeds[0];
+    }
+
+    if (embedding.empty()) {
+        res.status = 500;
+        res.set_content(ErrorEncoder::server_error("Invalid embedding output"), "application/json");
+        return;
+    }
+
+    nlohmann::json out;
+    out["embedding"] = embedding;
+    out["model"] = request.model;
+    res.set_content(out.dump(2), "application/json");
+}
+
+void Server::handleLlamaEmbeddings(const httplib::Request& req, httplib::Response& res) {
+    if (!verifyApiKey(req)) {
+        res.status = 401;
+        res.set_content(ErrorEncoder::encode("unauthorized", "Invalid API key"), "application/json");
+        return;
+    }
+
+    if (!acquireSlot()) {
+        res.status = 503;
+        res.set_content(ErrorEncoder::rate_limit(), "application/json");
+        return;
+    }
+    struct SlotGuard { Server* s; ~SlotGuard() { s->releaseSlot(); } } guard{this};
+
+    nlohmann::json req_json;
+    try {
+        req_json = nlohmann::json::parse(req.body);
+    } catch (...) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Invalid JSON"), "application/json");
+        return;
+    }
+
+    auto request = EmbeddingRequest::from_json(req_json);
+    if (request.model.empty()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Missing 'model' field"), "application/json");
+        return;
+    }
+    if (request.inputs.empty()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Missing 'input' field"), "application/json");
+        return;
+    }
+
+    if (!router_.hasEmbeddingModel(request.model)) {
+        res.status = 400;
+        auto available = router_.listEmbeddingModels();
+        std::string msg = "Model '" + request.model + "' is not available";
+        if (!available.empty()) {
+            msg += ". Available models: ";
+            for (size_t i = 0; i < available.size(); ++i) {
+                if (i > 0) msg += ", ";
+                msg += available[i];
+            }
+        }
+        res.set_content(ErrorEncoder::invalid_request(msg), "application/json");
+        return;
+    }
+
+    auto provider = std::make_shared<QueueProvider>(options_.default_timeout);
+    if (!router_.routeEmbedding(request, provider)) {
+        res.status = 500;
+        res.set_content(ErrorEncoder::server_error("Failed to route request"), "application/json");
+        return;
+    }
+
+    auto chunk = provider->wait_pop_for(options_.default_timeout);
+    if (!chunk.has_value()) {
+        res.status = 504;
+        res.set_content(ErrorEncoder::server_error("Request timeout"), "application/json");
+        return;
+    }
+    if (chunk->is_error()) {
+        res.status = 400;
+        EmbeddingsJSONEncoder encoder;
+        res.set_content(encoder.encode(chunk.value()), "application/json");
+        return;
+    }
+
+    // llama.cpp non-OAI response: JSON array [{ index, embedding }, ...]
+    nlohmann::json out = nlohmann::json::array();
+    if (chunk->type == OutputChunkType::Embedding) {
+        out.push_back({{"index", chunk->index}, {"embedding", chunk->embedding}});
+    } else if (chunk->type == OutputChunkType::Embeddings) {
+        for (size_t i = 0; i < chunk->embeds.size(); ++i) {
+            out.push_back({{"index", (int)i}, {"embedding", chunk->embeds[i]}});
+        }
+    }
+
+    res.set_content(out.dump(2), "application/json");
 }
 
 void Server::handleTranscriptions(const httplib::Request& req, httplib::Response& res) {
