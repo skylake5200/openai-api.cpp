@@ -11,6 +11,29 @@
 
 namespace openai_api {
 
+namespace detail {
+inline std::string json_dump_utf8_safe(const nlohmann::json& j,
+                                      int indent = -1,
+                                      char indent_char = ' ',
+                                      bool ensure_ascii = false) {
+    try {
+        return j.dump(indent, indent_char, ensure_ascii, nlohmann::json::error_handler_t::replace);
+    } catch (const std::exception& e) {
+        nlohmann::json err;
+        err["error"]["message"] = std::string("JSON serialization failed: ") + e.what();
+        err["error"]["type"] = "server_error";
+        err["error"]["code"] = "server_error";
+        return err.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+    } catch (...) {
+        nlohmann::json err;
+        err["error"]["message"] = "JSON serialization failed: unknown exception";
+        err["error"]["type"] = "server_error";
+        err["error"]["code"] = "server_error";
+        return err.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+    }
+}
+} // namespace detail
+
 /**
  * Encoder 基类
  * 负责将 OutputChunk 编码为具体的协议格式
@@ -73,7 +96,7 @@ public:
                 return "";
         }
         
-        return "data: " + data.dump() + "\n\n";
+        return "data: " + detail::json_dump_utf8_safe(data) + "\n\n";
     }
     
     std::string done_marker() const override {
@@ -153,7 +176,7 @@ public:
         j["usage"]["completion_tokens"] = chunk.usage.completion_tokens;
         j["usage"]["total_tokens"] = chunk.usage.total_tokens;
         
-        return j.dump(2);
+        return detail::json_dump_utf8_safe(j, 2);
     }
 };
 
@@ -183,7 +206,7 @@ public:
         j["usage"]["prompt_tokens"] = chunk.usage.prompt_tokens;
         j["usage"]["total_tokens"] = chunk.usage.total_tokens;
         
-        return j.dump(2);
+        return detail::json_dump_utf8_safe(j, 2);
     }
 
 private:
@@ -204,7 +227,7 @@ public:
     std::string encode(const OutputChunk& chunk) override {
         nlohmann::json j;
         j["text"] = chunk.text;
-        return j.dump(2);
+        return detail::json_dump_utf8_safe(j, 2);
     }
 };
 
@@ -235,7 +258,7 @@ public:
             j["segments"] = chunk.obj["segments"];
         }
         
-        return j.dump(2);
+        return detail::json_dump_utf8_safe(j, 2);
     }
 };
 
@@ -272,13 +295,13 @@ public:
             item["b64_json"] = base64_encode(chunk.bytes);
         } else if (chunk.type == OutputChunkType::JsonObject) {
             // URL 格式
-            return chunk.obj.dump(2);
+            return detail::json_dump_utf8_safe(chunk.obj, 2);
         }
         
         item["revised_prompt"] = "";
         j["data"] = nlohmann::json::array({item});
         
-        return j.dump(2);
+        return detail::json_dump_utf8_safe(j, 2);
     }
 
 private:
@@ -334,7 +357,7 @@ public:
         j["error"]["message"] = message;
         j["error"]["type"] = code;
         j["error"]["code"] = code;
-        return j.dump(2);
+        return detail::json_dump_utf8_safe(j, 2);
     }
     
     static std::string invalid_request(const std::string& message) {

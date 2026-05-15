@@ -253,7 +253,7 @@ void Server::handleHealth(const httplib::Request& req, httplib::Response& res) {
     j["status"] = "healthy";
     j["concurrency"] = current_concurrency_.load();
     j["max_concurrency"] = options_.max_concurrency;
-    res.set_content(j.dump(2), "application/json");
+    res.set_content(j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace), "application/json");
 }
 
 void Server::handleModels(const httplib::Request& req, httplib::Response& res) {
@@ -290,7 +290,7 @@ void Server::handleModels(const httplib::Request& req, httplib::Response& res) {
         j["data"].push_back(model_j);
     }
     
-    res.set_content(j.dump(2), "application/json");
+    res.set_content(j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace), "application/json");
 }
 
 void Server::handleChatCompletions(const httplib::Request& req, httplib::Response& res) {
@@ -760,7 +760,7 @@ void Server::handleLlamaEmbedding(const httplib::Request& req, httplib::Response
     nlohmann::json out;
     out["embedding"] = embedding;
     out["model"] = request.model;
-    res.set_content(out.dump(2), "application/json");
+    res.set_content(out.dump(2, ' ', false, nlohmann::json::error_handler_t::replace), "application/json");
 }
 
 void Server::handleLlamaEmbeddings(const httplib::Request& req, httplib::Response& res) {
@@ -864,7 +864,7 @@ void Server::handleLlamaEmbeddings(const httplib::Request& req, httplib::Respons
         }
     }
 
-    res.set_content(out.dump(2), "application/json");
+    res.set_content(out.dump(2, ' ', false, nlohmann::json::error_handler_t::replace), "application/json");
 }
 
 void Server::handleTranscriptions(const httplib::Request& req, httplib::Response& res) {

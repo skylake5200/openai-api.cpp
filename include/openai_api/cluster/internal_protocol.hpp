@@ -81,7 +81,9 @@ inline MessageHeader deserialize_header(const uint8_t* data) {
 
 // 构建完整消息
 inline std::vector<uint8_t> build_message(MessageType type, const nlohmann::json& payload = {}) {
-    std::string payload_str = payload.empty() ? "{}" : payload.dump();
+    std::string payload_str = payload.empty()
+        ? "{}"
+        : payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     
     MessageHeader header;
     header.magic = CLUSTER_MAGIC;
