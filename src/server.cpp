@@ -2,6 +2,7 @@
 #include "openai_api/encoder/encoder.hpp"
 
 #include <iostream>
+#include <filesystem>
 #include <sstream>
 #include <chrono>
 #include <regex>
@@ -37,6 +38,10 @@ void Server::setApiKey(const std::string& api_key) {
 
 void Server::setOwner(const std::string& owner) {
     options_.owner = owner;
+}
+
+void Server::setImageGenerationOutputDir(const std::string& dir) {
+    image_generation_output_dir_ = dir;
 }
 
 // ============ 模型注册 ============
@@ -107,6 +112,13 @@ void Server::run(const ServerOptions& options) {
         return s;
     }() << std::endl;
     
+    if (!image_generation_output_dir_.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(image_generation_output_dir_, ec);
+        http_server_.set_base_dir(image_generation_output_dir_, "/v1/images/generated");
+        http_server_.set_mount_point("/images/generated", image_generation_output_dir_);
+    }
+
     http_server_.listen(options_.host.c_str(), options_.port);
 }
 
@@ -235,6 +247,12 @@ void Server::setupRoutes() {
     });
     http_server_.Post("/images/generations", [this](const httplib::Request& req, httplib::Response& res) {
         handleImageGenerations(req, res);
+    });
+    http_server_.Post("/v1/images/edits", [this](const httplib::Request& req, httplib::Response& res) {
+        handleImageEdits(req, res);
+    });
+    http_server_.Post("/images/edits", [this](const httplib::Request& req, httplib::Response& res) {
+        handleImageEdits(req, res);
     });
     
     // CORS
@@ -1176,8 +1194,21 @@ void Server::handleImageGenerations(const httplib::Request& req, httplib::Respon
         res.set_content(ErrorEncoder::invalid_request("Missing 'prompt' field"), "application/json");
         return;
     }
+    const std::string host = req.get_header_value("Host");
+    if (!host.empty()) {
+        request.request_base_url = "http://" + host;
+    } else {
+        request.request_base_url = "http://127.0.0.1:" + std::to_string(options_.port);
+    }
     if (request.model.empty()) {
-        request.model = "dall-e-2";
+        auto available = router_.listImageGenModels();
+        if (available.size() == 1) {
+            request.model = available[0];
+        } else {
+            res.status = 400;
+            res.set_content(ErrorEncoder::invalid_request("Missing 'model' field"), "application/json");
+            return;
+        }
     }
     
     if (!router_.hasImageGenModel(request.model)) {
@@ -1214,6 +1245,154 @@ void Server::handleImageGenerations(const httplib::Request& req, httplib::Respon
         return;
     }
     
+    ImagesJSONEncoder encoder;
+    res.set_content(encoder.encode(chunk.value()), "application/json");
+}
+
+void Server::handleImageEdits(const httplib::Request& req, httplib::Response& res) {
+    if (!verifyApiKey(req)) {
+        res.status = 401;
+        res.set_content(ErrorEncoder::encode("unauthorized", "Invalid API key"), "application/json");
+        return;
+    }
+
+    if (!acquireSlot()) {
+        res.status = 503;
+        res.set_content(ErrorEncoder::rate_limit(), "application/json");
+        return;
+    }
+    struct SlotGuard { Server* s; ~SlotGuard() { s->releaseSlot(); } } guard{this};
+
+    ImageGenRequest request;
+    request.is_edit = true;
+    request.raw = nlohmann::json::object();
+
+    if (req.is_multipart_form_data()) {
+        if (req.form.has_field("model")) {
+            request.model = req.form.get_field("model");
+        }
+        if (req.form.has_field("prompt")) {
+            request.prompt = req.form.get_field("prompt");
+        }
+        if (req.form.has_field("size")) {
+            request.size = req.form.get_field("size");
+        }
+        if (req.form.has_field("quality")) {
+            request.quality = req.form.get_field("quality");
+        }
+        if (req.form.has_field("response_format")) {
+            request.response_format = req.form.get_field("response_format");
+        }
+        if (req.form.has_field("style")) {
+            request.style = req.form.get_field("style");
+        }
+        if (req.form.has_field("n")) {
+            try {
+                request.n = std::stoi(req.form.get_field("n"));
+            } catch (...) {
+            }
+        }
+        if (req.form.has_field("seed")) {
+            try {
+                request.seed = std::stoi(req.form.get_field("seed"));
+            } catch (...) {
+            }
+        }
+        if (req.form.has_field("num_inference_steps")) {
+            try {
+                request.num_inference_steps = std::stoi(req.form.get_field("num_inference_steps"));
+            } catch (...) {
+            }
+        }
+        if (req.form.has_field("guidance_scale")) {
+            try {
+                request.guidance_scale = std::stof(req.form.get_field("guidance_scale"));
+            } catch (...) {
+            }
+        }
+
+        if (req.form.has_file("image")) {
+            auto file = req.form.get_file("image");
+            request.image_filename = file.filename;
+            request.image_data.assign(file.content.begin(), file.content.end());
+        }
+        if (req.form.has_file("mask")) {
+            auto file = req.form.get_file("mask");
+            request.mask_filename = file.filename;
+            request.mask_data.assign(file.content.begin(), file.content.end());
+        }
+    }
+
+    if (request.prompt.empty()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Missing 'prompt' field"), "application/json");
+        return;
+    }
+    const std::string host = req.get_header_value("Host");
+    if (!host.empty()) {
+        request.request_base_url = "http://" + host;
+    } else {
+        request.request_base_url = "http://127.0.0.1:" + std::to_string(options_.port);
+    }
+    if (request.model.empty()) {
+        auto available = router_.listImageGenModels();
+        if (available.size() == 1) {
+            request.model = available[0];
+        } else {
+            res.status = 400;
+            res.set_content(ErrorEncoder::invalid_request("Missing 'model' field"), "application/json");
+            return;
+        }
+    }
+    if (!request.has_image_input()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::invalid_request("Missing 'image' file"), "application/json");
+        return;
+    }
+
+    request.raw["model"] = request.model;
+    request.raw["prompt"] = request.prompt;
+    request.raw["size"] = request.size;
+    request.raw["quality"] = request.quality;
+    request.raw["response_format"] = request.response_format;
+    request.raw["style"] = request.style;
+    request.raw["n"] = request.n;
+    request.raw["is_edit"] = true;
+
+    if (!router_.hasImageGenModel(request.model)) {
+        res.status = 400;
+        auto available = router_.listImageGenModels();
+        std::string msg = "Model '" + request.model + "' is not available";
+        if (!available.empty()) {
+            msg += ". Available models: ";
+            for (size_t i = 0; i < available.size(); ++i) {
+                if (i > 0) msg += ", ";
+                msg += available[i];
+            }
+        }
+        res.set_content(ErrorEncoder::invalid_request(msg), "application/json");
+        return;
+    }
+
+    auto provider = std::make_shared<QueueProvider>(options_.default_timeout);
+    if (!router_.routeImageGeneration(request, provider)) {
+        res.status = 500;
+        res.set_content(ErrorEncoder::server_error("Failed to route request"), "application/json");
+        return;
+    }
+
+    auto chunk = provider->wait_pop_for(options_.default_timeout);
+    if (!chunk.has_value()) {
+        res.status = 504;
+        res.set_content(ErrorEncoder::server_error("Request timeout"), "application/json");
+        return;
+    }
+    if (chunk->is_error()) {
+        res.status = 400;
+        res.set_content(ErrorEncoder::encode(chunk->error_code, chunk->error_message), "application/json");
+        return;
+    }
+
     ImagesJSONEncoder encoder;
     res.set_content(encoder.encode(chunk.value()), "application/json");
 }
