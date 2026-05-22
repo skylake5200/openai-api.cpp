@@ -256,12 +256,23 @@ struct TTSRequest {
 
 struct ImageGenRequest {
     std::string prompt;
-    std::string model = "dall-e-2";
+    std::string model;
     int n = 1;
     std::string quality = "standard";
     std::string response_format = "url";  // url, b64_json
     std::string size = "1024x1024";
     std::string style = "vivid";
+    int seed = -1;
+    int num_inference_steps = 4;
+    float guidance_scale = 0.0f;
+    std::string init_image;
+    std::string mask;
+    std::string request_base_url;
+    bool is_edit = false;
+    std::vector<uint8_t> image_data;
+    std::string image_filename;
+    std::vector<uint8_t> mask_data;
+    std::string mask_filename;
     
     nlohmann::json raw;
     
@@ -276,8 +287,19 @@ struct ImageGenRequest {
         if (j.contains("response_format")) req.response_format = j["response_format"].get<std::string>();
         if (j.contains("size")) req.size = j["size"].get<std::string>();
         if (j.contains("style")) req.style = j["style"].get<std::string>();
+        if (j.contains("seed")) req.seed = j["seed"].get<int>();
+        if (j.contains("num_inference_steps")) req.num_inference_steps = j["num_inference_steps"].get<int>();
+        if (j.contains("guidance_scale")) req.guidance_scale = j["guidance_scale"].get<float>();
+        if (j.contains("init_image")) req.init_image = j["init_image"].get<std::string>();
+        else if (j.contains("image") && j["image"].is_string()) req.init_image = j["image"].get<std::string>();
+        else if (j.contains("input_image")) req.init_image = j["input_image"].get<std::string>();
+        if (j.contains("mask") && j["mask"].is_string()) req.mask = j["mask"].get<std::string>();
         
         return req;
+    }
+
+    bool has_image_input() const {
+        return !image_data.empty();
     }
 };
 

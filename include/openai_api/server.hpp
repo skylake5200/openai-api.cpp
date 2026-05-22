@@ -101,6 +101,7 @@ public:
      * 设置模型拥有者名称（显示在 /v1/models 中）
      */
     void setOwner(const std::string& owner);
+    void setImageGenerationOutputDir(const std::string& dir);
     
     // ============ 模型注册 ============
     
@@ -207,6 +208,7 @@ private:
     void handleTranslations(const httplib::Request& req, httplib::Response& res);
     void handleSpeech(const httplib::Request& req, httplib::Response& res);
     void handleImageGenerations(const httplib::Request& req, httplib::Response& res);
+    void handleImageEdits(const httplib::Request& req, httplib::Response& res);
     
     // 并发控制
     bool acquireSlot();
@@ -216,6 +218,7 @@ private:
     ServerOptions options_;
     ModelRouter router_;
     httplib::Server http_server_;
+    std::string image_generation_output_dir_;
     
     std::atomic<bool> running_{false};
     std::atomic<int> current_concurrency_{0};
