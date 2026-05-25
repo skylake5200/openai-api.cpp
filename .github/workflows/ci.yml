@@ -158,7 +158,8 @@ jobs:
       run: |
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_CXX_FLAGS="--coverage" \
+          -DCMAKE_CXX_FLAGS="--coverage -fprofile-update=atomic" \
+          -DCMAKE_C_FLAGS="--coverage -fprofile-update=atomic" \
           -DOPENAI_API_BUILD_TESTS=ON \
           -DOPENAI_API_BUILD_EXAMPLES=OFF
     
